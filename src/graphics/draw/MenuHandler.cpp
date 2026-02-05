@@ -1783,14 +1783,16 @@ void menuHandler::zorkmeshMenu()
             // Start new game
             if (zorkMeshModule) {
                 zorkMeshModule->startGame();
+                zorkMeshModule->showGameUI();
             }
-            screen->showSimpleBanner("ZorkMesh Started!\nGame UI coming soon...", 3000);
         } else if (selected == Resume) {
             // Resume existing game
-            if (zorkMeshModule && !zorkMeshModule->isGameActive()) {
-                zorkMeshModule->startGame();
+            if (zorkMeshModule) {
+                if (!zorkMeshModule->isGameActive()) {
+                    zorkMeshModule->startGame();
+                }
+                zorkMeshModule->showGameUI();
             }
-            screen->showSimpleBanner("Resuming game...\nGame UI coming soon...", 3000);
         } else if (selected == About) {
             screen->showSimpleBanner("ZorkMesh v0.1\nMultiplayer Zork\nover mesh network", 5000);
         }

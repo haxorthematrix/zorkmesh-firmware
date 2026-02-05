@@ -2,6 +2,9 @@
 
 #include "SinglePortModule.h"
 #include "concurrency/OSThread.h"
+#ifdef T_DECK
+#include "input/InputBroker.h"
+#endif
 
 /**
  * ZorkMesh Module - Multiplayer Zork game over Meshtastic mesh network
@@ -13,6 +16,8 @@
 
 // Forward declarations
 class ZorkMeshModuleRadio;
+class GameEngine;
+class GameUI;
 
 /**
  * Main module thread - handles periodic tasks like heartbeat
@@ -22,7 +27,7 @@ class ZorkMeshModule : public concurrency::OSThread
   public:
     ZorkMeshModule();
 
-    // Start the game
+    // Start the game (initializes engine and UI)
     void startGame();
 
     // Stop the game
@@ -31,6 +36,20 @@ class ZorkMeshModule : public concurrency::OSThread
     // Check if game is active
     bool isGameActive() const { return gameActive; }
 
+    // Show the game UI screen
+    void showGameUI();
+
+    // Hide the game UI and return to Meshtastic
+    void hideGameUI();
+
+    // Process a command from the UI
+    void processCommand(const char* command);
+
+#ifdef T_DECK
+    // Handle keyboard input
+    int handleInputEvent(const InputEvent* event);
+#endif
+
   protected:
     virtual int32_t runOnce() override;
 
@@ -38,6 +57,13 @@ class ZorkMeshModule : public concurrency::OSThread
     bool gameActive = false;
     bool firstTime = true;
     uint32_t lastHeartbeat = 0;
+    bool uiVisible = false;
+
+#ifdef T_DECK
+    // Keyboard observer
+    CallbackObserver<ZorkMeshModule, const InputEvent*> inputObserver =
+        CallbackObserver<ZorkMeshModule, const InputEvent*>(this, &ZorkMeshModule::handleInputEvent);
+#endif
 
     static const uint32_t HEARTBEAT_INTERVAL_MS = 60000; // 1 minute
 };
