@@ -107,6 +107,11 @@
 #include "modules/DropzoneModule.h"
 #endif
 
+// ZorkMesh - Multiplayer Zork over mesh network
+#ifdef T_DECK
+#include "modules/ZorkMeshModule/ZorkMeshModule.h"
+#endif
+
 /**
  * Create module instances here.  If you are adding a new module, you must 'new' it here (or somewhere else)
  */
@@ -298,6 +303,13 @@ void setupModules()
     if (moduleConfig.has_range_test && moduleConfig.range_test.enabled)
         new RangeTestModule();
 #endif
+
+    // ZorkMesh - Multiplayer Zork game module (T-Deck only)
+#ifdef T_DECK
+    zorkMeshModule = new ZorkMeshModule();
+    // Game engine will be created when game is started from UI
+#endif
+
     // NOTE! This module must be added LAST because it likes to check for replies from other modules and avoid sending extra
     // acks
     routingModule = new RoutingModule();

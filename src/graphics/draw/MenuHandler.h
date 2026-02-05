@@ -45,7 +45,8 @@ class menuHandler
         throttle_message,
         node_name_length_menu,
         FrameToggles,
-        DisplayUnits
+        DisplayUnits,
+        zorkmesh_game
     };
     static screenMenus menuQueue;
 
@@ -91,6 +92,9 @@ class menuHandler
     static void FrameToggles_menu();
     static void DisplayUnits_menu();
     static void textMessageMenu();
+#ifdef T_DECK
+    static void zorkmeshMenu();
+#endif
 
   private:
     static void saveUIConfig();

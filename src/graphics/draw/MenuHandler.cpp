@@ -19,6 +19,9 @@
 #include "modules/KeyVerificationModule.h"
 
 #include "modules/TraceRouteModule.h"
+#ifdef T_DECK
+#include "modules/ZorkMeshModule/ZorkMeshModule.h"
+#endif
 #include <functional>
 
 extern uint16_t TFT_MESH;
@@ -574,7 +577,11 @@ void menuHandler::textMessageBaseMenu()
 
 void menuHandler::systemBaseMenu()
 {
-    enum optionsNumbers { Back, Notifications, ScreenOptions, Bluetooth, PowerMenu, Test, enumEnd };
+    enum optionsNumbers { Back, Notifications, ScreenOptions, Bluetooth, PowerMenu, Test,
+#ifdef T_DECK
+        ZorkMesh,
+#endif
+        enumEnd };
     static const char *optionsArray[enumEnd] = {"Back"};
     static int optionsEnumArray[enumEnd] = {Back};
     int options = 1;
@@ -602,6 +609,12 @@ void menuHandler::systemBaseMenu()
         optionsEnumArray[options++] = Test;
     }
 
+#ifdef T_DECK
+    // ZorkMesh game option
+    optionsArray[options] = "ZorkMesh Game";
+    optionsEnumArray[options++] = ZorkMesh;
+#endif
+
     BannerOverlayOptions bannerOptions;
 #if defined(M5STACK_UNITC6L)
     bannerOptions.message = "System";
@@ -627,6 +640,11 @@ void menuHandler::systemBaseMenu()
         } else if (selected == Bluetooth) {
             menuQueue = bluetooth_toggle_menu;
             screen->runNow();
+#ifdef T_DECK
+        } else if (selected == ZorkMesh) {
+            menuQueue = zorkmesh_game;
+            screen->runNow();
+#endif
         } else if (selected == Back && !test_enabled) {
             test_count++;
             if (test_count > 4) {
@@ -1737,6 +1755,11 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
     case throttle_message:
         screen->showSimpleBanner("Too Many Attempts\nTry again in 60 seconds.", 5000);
         break;
+#ifdef T_DECK
+    case zorkmesh_game:
+        zorkmeshMenu();
+        break;
+#endif
     }
     menuQueue = menu_none;
 }
@@ -1745,6 +1768,36 @@ void menuHandler::saveUIConfig()
 {
     nodeDB->saveProto("/prefs/uiconfig.proto", meshtastic_DeviceUIConfig_size, &meshtastic_DeviceUIConfig_msg, &uiconfig);
 }
+
+#ifdef T_DECK
+void menuHandler::zorkmeshMenu()
+{
+    static const char *optionsArray[] = {"Back", "Start Game", "Resume Game", "About"};
+    enum optionsNumbers { Back = 0, Start = 1, Resume = 2, About = 3 };
+    BannerOverlayOptions bannerOptions;
+    bannerOptions.message = "ZorkMesh";
+    bannerOptions.optionsArrayPtr = optionsArray;
+    bannerOptions.optionsCount = 4;
+    bannerOptions.bannerCallback = [](int selected) -> void {
+        if (selected == Start) {
+            // Start new game
+            if (zorkMeshModule) {
+                zorkMeshModule->startGame();
+            }
+            screen->showSimpleBanner("ZorkMesh Started!\nGame UI coming soon...", 3000);
+        } else if (selected == Resume) {
+            // Resume existing game
+            if (zorkMeshModule && !zorkMeshModule->isGameActive()) {
+                zorkMeshModule->startGame();
+            }
+            screen->showSimpleBanner("Resuming game...\nGame UI coming soon...", 3000);
+        } else if (selected == About) {
+            screen->showSimpleBanner("ZorkMesh v0.1\nMultiplayer Zork\nover mesh network", 5000);
+        }
+    };
+    screen->showOverlayBanner(bannerOptions);
+}
+#endif
 
 } // namespace graphics
 
