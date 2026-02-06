@@ -13,6 +13,59 @@
 #include "Router.h"
 #include "configuration.h"
 #include <Arduino.h>
+#include "serialization/JSON.h"
+
+// Protocol version for compatibility
+#define ZORKMESH_PROTOCOL_VERSION 1
+
+// Max remote players to track
+#define MAX_REMOTE_PLAYERS 8
+static RemotePlayer remotePlayers[MAX_REMOTE_PLAYERS];
+static int remotePlayerCount = 0;
+
+// Find or create a remote player entry
+static RemotePlayer* findOrCreatePlayer(const char* playerId) {
+    // Search existing
+    for (int i = 0; i < MAX_REMOTE_PLAYERS; i++) {
+        if (remotePlayers[i].active && strcmp(remotePlayers[i].playerId, playerId) == 0) {
+            return &remotePlayers[i];
+        }
+    }
+    // Find empty slot
+    for (int i = 0; i < MAX_REMOTE_PLAYERS; i++) {
+        if (!remotePlayers[i].active) {
+            memset(&remotePlayers[i], 0, sizeof(RemotePlayer));
+            strncpy(remotePlayers[i].playerId, playerId, sizeof(remotePlayers[i].playerId) - 1);
+            remotePlayers[i].active = true;
+            remotePlayers[i].lastSeen = millis();
+            remotePlayerCount++;
+            return &remotePlayers[i];
+        }
+    }
+    return nullptr; // No space
+}
+
+// Remove a player
+static void removePlayer(const char* playerId) {
+    for (int i = 0; i < MAX_REMOTE_PLAYERS; i++) {
+        if (remotePlayers[i].active && strcmp(remotePlayers[i].playerId, playerId) == 0) {
+            remotePlayers[i].active = false;
+            remotePlayerCount--;
+            return;
+        }
+    }
+}
+
+// Get players in a specific room
+static int getPlayersInRoom(const char* roomId, RemotePlayer** result, int maxResults) {
+    int count = 0;
+    for (int i = 0; i < MAX_REMOTE_PLAYERS && count < maxResults; i++) {
+        if (remotePlayers[i].active && strcmp(remotePlayers[i].roomId, roomId) == 0) {
+            result[count++] = &remotePlayers[i];
+        }
+    }
+    return count;
+}
 
 // Global instances
 ZorkMeshModule *zorkMeshModule = nullptr;
@@ -279,6 +332,36 @@ void ZorkMeshModule::processCommand(const char* command)
 {
     if (!gameEngine) return;
 
+    // Handle multiplayer-specific commands
+    if (strncasecmp(command, "WHO", 3) == 0 || strncasecmp(command, "PLAYERS", 7) == 0) {
+        const char* currentRoom = gameEngine->getCurrentRoomId();
+        RemotePlayer* playersHere[MAX_REMOTE_PLAYERS];
+        int count = getPlayersInRoom(currentRoom, playersHere, MAX_REMOTE_PLAYERS);
+
+#ifdef T_DECK
+        if (gameUI) {
+            if (count == 0) {
+                gameUI->println("You are alone here.");
+            } else if (count == 1) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s is here.", playersHere[0]->name);
+                gameUI->println(msg);
+            } else {
+                String msg = "";
+                for (int i = 0; i < count; i++) {
+                    if (i > 0) msg += ", ";
+                    if (i == count - 1 && count > 1) msg += "and ";
+                    msg += playersHere[i]->name;
+                }
+                msg += " are here.";
+                gameUI->println(msg.c_str());
+            }
+            gameUI->println("");
+        }
+#endif
+        return;
+    }
+
     // Get previous room ID to detect movement
     const char* prevRoom = gameEngine->getCurrentRoomId();
 
@@ -302,7 +385,7 @@ void ZorkMeshModule::processCommand(const char* command)
     // Check if player moved and send update to mesh
     const char* newRoom = gameEngine->getCurrentRoomId();
     if (strcmp(prevRoom, newRoom) != 0 && zorkMeshModuleRadio) {
-        zorkMeshModuleRadio->sendMove(gameEngine->getPlayerName(), newRoom);
+        zorkMeshModuleRadio->sendMove(gameEngine->getPlayerName(), prevRoom, newRoom);
     }
 
     // Check for chat command
@@ -340,6 +423,16 @@ int ZorkMeshModule::handleInputEvent(const InputEvent* event)
         // ESC key exits game
         if (event->kbchar == 0x1B) {
             hideGameUI();
+            return 1;
+        }
+        // '[' key scrolls output up (Page Up)
+        if (event->kbchar == '[') {
+            gameUI->onKeyPress(0x02); // Custom code for page up
+            return 1;
+        }
+        // ']' key scrolls output down (Page Down)
+        if (event->kbchar == ']') {
+            gameUI->onKeyPress(0x03); // Custom code for page down
             return 1;
         }
         gameUI->onKeyPress(event->kbchar);
@@ -468,12 +561,35 @@ int32_t ZorkMeshModule::runOnce()
         return 10000; // Check every 10 seconds when inactive
     }
 
-    // Send periodic heartbeat when game is active
     uint32_t now = millis();
+
+    // Send periodic heartbeat when game is active
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = now;
-        // TODO: Send heartbeat with current player info
-        LOG_DEBUG("ZorkMesh heartbeat");
+        if (gameEngine && zorkMeshModuleRadio) {
+            zorkMeshModuleRadio->sendHeartbeat(
+                gameEngine->getPlayerName(),
+                gameEngine->getCurrentRoomId()
+            );
+            LOG_DEBUG("ZorkMesh heartbeat sent");
+        }
+    }
+
+    // Clean up stale players (not seen in 3 minutes)
+    static const uint32_t PLAYER_TIMEOUT_MS = 180000;
+    for (int i = 0; i < MAX_REMOTE_PLAYERS; i++) {
+        if (remotePlayers[i].active && (now - remotePlayers[i].lastSeen > PLAYER_TIMEOUT_MS)) {
+#ifdef T_DECK
+            if (gameUI) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "[%s has timed out]", remotePlayers[i].name);
+                gameUI->println(msg);
+            }
+#endif
+            LOG_INFO("ZorkMesh: Player %s timed out", remotePlayers[i].name);
+            remotePlayers[i].active = false;
+            remotePlayerCount--;
+        }
     }
 
     return 5000; // Run every 5 seconds when active
@@ -512,84 +628,79 @@ void ZorkMeshModuleRadio::sendGameMessage(const char* jsonPayload)
     service->sendToMesh(p);
 }
 
-void ZorkMeshModuleRadio::sendJoin(const char* playerName, const char* roomId)
-{
-    // Generate player ID (6-char hex hash of name)
-    char playerId[7];
+// Helper to generate player ID hash
+static void generatePlayerId(const char* playerName, char* playerId) {
     uint32_t hash = 0;
     for (const char* c = playerName; *c; c++) {
         hash = hash * 31 + *c;
     }
-    snprintf(playerId, sizeof(playerId), "%06X", hash & 0xFFFFFF);
+    snprintf(playerId, 7, "%06X", hash & 0xFFFFFF);
+}
 
-    char payload[128];
+// Local player's ID (cached)
+static char localPlayerId[8] = {0};
+
+void ZorkMeshModuleRadio::sendJoin(const char* playerName, const char* roomId)
+{
+    generatePlayerId(playerName, localPlayerId);
+
+    // Format: {"v":1,"t":"PJ","p":"ABC123","s":0,"d":{"n":"name","r":"roomid"}}
+    char payload[192];
     snprintf(payload, sizeof(payload),
-             "{\"t\":\"PJ\",\"p\":\"%s\",\"n\":\"%s\",\"r\":\"%s\"}",
-             playerId, playerName, roomId);
+             "{\"v\":%d,\"t\":\"PJ\",\"p\":\"%s\",\"s\":0,\"d\":{\"n\":\"%s\",\"r\":\"%s\"}}",
+             ZORKMESH_PROTOCOL_VERSION, localPlayerId, playerName, roomId);
     sendGameMessage(payload);
 }
 
 void ZorkMeshModuleRadio::sendLeave(const char* playerName)
 {
-    char playerId[7];
-    uint32_t hash = 0;
-    for (const char* c = playerName; *c; c++) {
-        hash = hash * 31 + *c;
-    }
-    snprintf(playerId, sizeof(playerId), "%06X", hash & 0xFFFFFF);
+    generatePlayerId(playerName, localPlayerId);
 
-    char payload[64];
+    char payload[96];
     snprintf(payload, sizeof(payload),
-             "{\"t\":\"PL\",\"p\":\"%s\"}",
-             playerId);
+             "{\"v\":%d,\"t\":\"PL\",\"p\":\"%s\",\"s\":0,\"d\":{}}",
+             ZORKMESH_PROTOCOL_VERSION, localPlayerId);
     sendGameMessage(payload);
 }
 
-void ZorkMeshModuleRadio::sendMove(const char* playerName, const char* roomId)
+void ZorkMeshModuleRadio::sendMove(const char* playerName, const char* fromRoom, const char* toRoom)
 {
-    char playerId[7];
-    uint32_t hash = 0;
-    for (const char* c = playerName; *c; c++) {
-        hash = hash * 31 + *c;
-    }
-    snprintf(playerId, sizeof(playerId), "%06X", hash & 0xFFFFFF);
+    generatePlayerId(playerName, localPlayerId);
 
-    char payload[64];
+    char payload[192];
     snprintf(payload, sizeof(payload),
-             "{\"t\":\"PM\",\"p\":\"%s\",\"r\":\"%s\"}",
-             playerId, roomId);
+             "{\"v\":%d,\"t\":\"PM\",\"p\":\"%s\",\"s\":0,\"d\":{\"f\":\"%s\",\"r\":\"%s\",\"n\":\"%s\"}}",
+             ZORKMESH_PROTOCOL_VERSION, localPlayerId, fromRoom, toRoom, playerName);
     sendGameMessage(payload);
 }
 
 void ZorkMeshModuleRadio::sendChat(const char* playerName, const char* message)
 {
-    char playerId[7];
-    uint32_t hash = 0;
-    for (const char* c = playerName; *c; c++) {
-        hash = hash * 31 + *c;
+    generatePlayerId(playerName, localPlayerId);
+
+    // Escape any quotes in the message (simple approach - just truncate at quote)
+    char safeMsg[128];
+    strncpy(safeMsg, message, sizeof(safeMsg) - 1);
+    safeMsg[sizeof(safeMsg) - 1] = '\0';
+    for (char* p = safeMsg; *p; p++) {
+        if (*p == '"') *p = '\'';  // Replace quotes with single quotes
     }
-    snprintf(playerId, sizeof(playerId), "%06X", hash & 0xFFFFFF);
 
     char payload[256];
     snprintf(payload, sizeof(payload),
-             "{\"t\":\"CH\",\"p\":\"%s\",\"m\":\"%s\"}",
-             playerId, message);
+             "{\"v\":%d,\"t\":\"CH\",\"p\":\"%s\",\"s\":0,\"d\":{\"m\":\"%s\",\"n\":\"%s\"}}",
+             ZORKMESH_PROTOCOL_VERSION, localPlayerId, safeMsg, playerName);
     sendGameMessage(payload);
 }
 
 void ZorkMeshModuleRadio::sendHeartbeat(const char* playerName, const char* roomId)
 {
-    char playerId[7];
-    uint32_t hash = 0;
-    for (const char* c = playerName; *c; c++) {
-        hash = hash * 31 + *c;
-    }
-    snprintf(playerId, sizeof(playerId), "%06X", hash & 0xFFFFFF);
+    generatePlayerId(playerName, localPlayerId);
 
-    char payload[64];
+    char payload[128];
     snprintf(payload, sizeof(payload),
-             "{\"t\":\"HB\",\"p\":\"%s\",\"r\":\"%s\"}",
-             playerId, roomId);
+             "{\"v\":%d,\"t\":\"HB\",\"p\":\"%s\",\"s\":0,\"d\":{\"r\":\"%s\"}}",
+             ZORKMESH_PROTOCOL_VERSION, localPlayerId, roomId);
     sendGameMessage(payload);
 }
 
@@ -613,8 +724,221 @@ ProcessMessage ZorkMeshModuleRadio::handleReceived(const meshtastic_MeshPacket &
     // Log received message for debugging
     LOG_INFO("ZorkMesh received from 0x%0x: %.*s", mp.from, p.payload.size, p.payload.bytes);
 
-    // TODO: Parse JSON and dispatch to game engine
-    // Message types: PJ (join), PL (leave), PM (move), CH (chat), HB (heartbeat), PA (action)
+    // Null-terminate the payload for JSON parsing
+    char jsonBuf[256];
+    size_t copyLen = p.payload.size < sizeof(jsonBuf) - 1 ? p.payload.size : sizeof(jsonBuf) - 1;
+    memcpy(jsonBuf, p.payload.bytes, copyLen);
+    jsonBuf[copyLen] = '\0';
+
+    // Parse JSON message using SimpleJSON
+    JSONValue* root = JSON::Parse(jsonBuf);
+    if (!root || !root->IsObject()) {
+        LOG_WARN("ZorkMesh JSON parse error");
+        delete root;
+        return ProcessMessage::CONTINUE;
+    }
+
+    // Extract common fields
+    const char* msgType = "";
+    const char* playerId = "";
+
+    if (root->HasChild("t") && root->Child("t")->IsString()) {
+        msgType = root->Child("t")->AsString().c_str();
+    }
+    if (root->HasChild("p") && root->Child("p")->IsString()) {
+        playerId = root->Child("p")->AsString().c_str();
+    }
+
+    // Ignore messages from ourselves (by player ID)
+    if (strlen(localPlayerId) > 0 && strcmp(playerId, localPlayerId) == 0) {
+        delete root;
+        return ProcessMessage::CONTINUE;
+    }
+
+    // Get the data object
+    JSONValue* data = root->HasChild("d") ? root->Child("d") : nullptr;
+
+    // Get current room for comparison
+    const char* currentRoom = gameEngine ? gameEngine->getCurrentRoomId() : "";
+
+    // Handle message types
+    if (strcmp(msgType, "PJ") == 0) {
+        // Player Join
+        const char* name = playerId;
+        const char* roomId = "whous";
+        if (data && data->IsObject()) {
+            if (data->HasChild("n") && data->Child("n")->IsString()) {
+                name = data->Child("n")->AsString().c_str();
+            }
+            if (data->HasChild("r") && data->Child("r")->IsString()) {
+                roomId = data->Child("r")->AsString().c_str();
+            }
+        }
+
+        RemotePlayer* player = findOrCreatePlayer(playerId);
+        if (player) {
+            strncpy(player->name, name, sizeof(player->name) - 1);
+            strncpy(player->roomId, roomId, sizeof(player->roomId) - 1);
+            player->lastSeen = millis();
+
+            // Notify UI
+#ifdef T_DECK
+            if (gameUI) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "[%s has entered the game]", player->name);
+                gameUI->println(msg);
+            }
+#endif
+            LOG_INFO("ZorkMesh: Player %s joined in room %s", player->name, roomId);
+        }
+    }
+    else if (strcmp(msgType, "PL") == 0) {
+        // Player Leave
+        RemotePlayer* player = nullptr;
+        for (int i = 0; i < MAX_REMOTE_PLAYERS; i++) {
+            if (remotePlayers[i].active && strcmp(remotePlayers[i].playerId, playerId) == 0) {
+                player = &remotePlayers[i];
+                break;
+            }
+        }
+
+        if (player) {
+#ifdef T_DECK
+            if (gameUI) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "[%s has left the game]", player->name);
+                gameUI->println(msg);
+            }
+#endif
+            LOG_INFO("ZorkMesh: Player %s left", player->name);
+            removePlayer(playerId);
+        }
+    }
+    else if (strcmp(msgType, "PM") == 0) {
+        // Player Move
+        const char* fromRoom = "";
+        const char* toRoom = "";
+        const char* name = "";
+        if (data && data->IsObject()) {
+            if (data->HasChild("f") && data->Child("f")->IsString()) {
+                fromRoom = data->Child("f")->AsString().c_str();
+            }
+            if (data->HasChild("r") && data->Child("r")->IsString()) {
+                toRoom = data->Child("r")->AsString().c_str();
+            }
+            if (data->HasChild("n") && data->Child("n")->IsString()) {
+                name = data->Child("n")->AsString().c_str();
+            }
+        }
+
+        RemotePlayer* player = findOrCreatePlayer(playerId);
+        if (player) {
+            if (strlen(name) > 0) {
+                strncpy(player->name, name, sizeof(player->name) - 1);
+            }
+            strncpy(player->roomId, toRoom, sizeof(player->roomId) - 1);
+            player->lastSeen = millis();
+
+            // Check if player entered or left our room
+#ifdef T_DECK
+            if (gameUI && strlen(currentRoom) > 0) {
+                if (strcmp(toRoom, currentRoom) == 0) {
+                    char msg[48];
+                    snprintf(msg, sizeof(msg), "%s has arrived.", player->name);
+                    gameUI->println(msg);
+                } else if (strcmp(fromRoom, currentRoom) == 0) {
+                    char msg[48];
+                    snprintf(msg, sizeof(msg), "%s has left.", player->name);
+                    gameUI->println(msg);
+                }
+            }
+#endif
+            LOG_INFO("ZorkMesh: Player %s moved from %s to %s", player->name, fromRoom, toRoom);
+        }
+    }
+    else if (strcmp(msgType, "CH") == 0) {
+        // Chat message
+        const char* message = "";
+        const char* name = "";
+        if (data && data->IsObject()) {
+            if (data->HasChild("m") && data->Child("m")->IsString()) {
+                message = data->Child("m")->AsString().c_str();
+            }
+            if (data->HasChild("n") && data->Child("n")->IsString()) {
+                name = data->Child("n")->AsString().c_str();
+            }
+        }
+
+        RemotePlayer* player = findOrCreatePlayer(playerId);
+        if (player) {
+            if (strlen(name) > 0) {
+                strncpy(player->name, name, sizeof(player->name) - 1);
+            }
+            player->lastSeen = millis();
+
+#ifdef T_DECK
+            if (gameUI) {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "%s says: \"%s\"", player->name, message);
+                gameUI->println(msg);
+            }
+#endif
+            LOG_INFO("ZorkMesh: Chat from %s: %s", player->name, message);
+        }
+    }
+    else if (strcmp(msgType, "HB") == 0) {
+        // Heartbeat - just update last seen
+        const char* roomId = "";
+        if (data && data->IsObject() && data->HasChild("r") && data->Child("r")->IsString()) {
+            roomId = data->Child("r")->AsString().c_str();
+        }
+
+        RemotePlayer* player = findOrCreatePlayer(playerId);
+        if (player) {
+            if (strlen(roomId) > 0) {
+                strncpy(player->roomId, roomId, sizeof(player->roomId) - 1);
+            }
+            player->lastSeen = millis();
+        }
+    }
+    else if (strcmp(msgType, "PA") == 0) {
+        // Player Action
+        const char* verb = "";
+        const char* objId = "";
+        const char* roomId = "";
+        if (data && data->IsObject()) {
+            if (data->HasChild("v") && data->Child("v")->IsString()) {
+                verb = data->Child("v")->AsString().c_str();
+            }
+            if (data->HasChild("o") && data->Child("o")->IsString()) {
+                objId = data->Child("o")->AsString().c_str();
+            }
+            if (data->HasChild("r") && data->Child("r")->IsString()) {
+                roomId = data->Child("r")->AsString().c_str();
+            }
+        }
+
+        RemotePlayer* player = findOrCreatePlayer(playerId);
+        if (player) {
+            player->lastSeen = millis();
+
+            // Only show if in same room
+#ifdef T_DECK
+            if (gameUI && strlen(currentRoom) > 0 && strcmp(roomId, currentRoom) == 0) {
+                char msg[80];
+                if (strlen(objId) > 0) {
+                    snprintf(msg, sizeof(msg), "%s %ss the %s.", player->name, verb, objId);
+                } else {
+                    snprintf(msg, sizeof(msg), "%s %ss.", player->name, verb);
+                }
+                gameUI->println(msg);
+            }
+#endif
+        }
+    }
+
+    // Clean up
+    delete root;
 
     // Wake screen on game message
     powerFSM.trigger(EVENT_RECEIVED_MSG);

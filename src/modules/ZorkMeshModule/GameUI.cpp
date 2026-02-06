@@ -185,12 +185,18 @@ void GameUI::createOutputArea()
     lv_obj_set_style_border_width(outputArea, 0, 0);
     lv_obj_set_style_pad_all(outputArea, 4, 0);
 
-    // Make it read-only (display only)
+    // Make it read-only but still scrollable
     lv_textarea_set_cursor_click_pos(outputArea, false);
-    lv_obj_remove_flag(outputArea, LV_OBJ_FLAG_CLICKABLE);
 
-    // Enable scrolling
+    // Enable scrolling - keep clickable for trackball/touch scroll
     lv_obj_set_scroll_dir(outputArea, LV_DIR_VER);
+    lv_obj_add_flag(outputArea, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Show scrollbar when needed
+    lv_obj_set_scrollbar_mode(outputArea, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(outputArea, 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(outputArea, COLOR_TEXT, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(outputArea, LV_OPA_COVER, LV_PART_SCROLLBAR);
 
     // Welcome message
     lv_textarea_set_text(outputArea,
@@ -383,11 +389,21 @@ void GameUI::onKeyPress(uint8_t key)
         case 0x08: // Backspace
             lv_textarea_delete_char(inputField);
             break;
-        case 0x00: // Up arrow (depends on keyboard mapping)
+        case 0x00: // Up arrow (custom code from ZorkMeshModule)
             historyUp();
             break;
-        case 0x01: // Down arrow
+        case 0x01: // Down arrow (custom code from ZorkMeshModule)
             historyDown();
+            break;
+        case 0x02: // Page Up (custom code) - scroll output up
+            if (outputArea) {
+                lv_obj_scroll_by(outputArea, 0, 80, LV_ANIM_ON);
+            }
+            break;
+        case 0x03: // Page Down (custom code) - scroll output down
+            if (outputArea) {
+                lv_obj_scroll_by(outputArea, 0, -80, LV_ANIM_ON);
+            }
             break;
         default:
             // Regular character

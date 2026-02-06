@@ -138,6 +138,7 @@ struct RemotePlayer {
     char name[MAX_NAME_LEN];
     char roomId[MAX_ROOM_ID_LEN];
     uint32_t lastSeen;        // millis() timestamp
+    bool active;              // Is this slot in use
 };
 
 /**

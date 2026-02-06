@@ -95,7 +95,7 @@ class ZorkMeshModuleRadio : public SinglePortModule
     void sendLeave(const char* playerName);
 
     // Send player move message
-    void sendMove(const char* playerName, const char* roomId);
+    void sendMove(const char* playerName, const char* fromRoom, const char* toRoom);
 
     // Send chat message
     void sendChat(const char* playerName, const char* message);
