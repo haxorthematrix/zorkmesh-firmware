@@ -16,6 +16,28 @@
 #define MAX_ROOM_ID_LEN 16
 #define MAX_NAME_LEN 64
 #define MAX_DESC_LEN 512
+#define MAX_OBJECTS 100
+#define MAX_SCORE 350
+
+// Special location constants
+#define LOC_INVENTORY "inventory"
+#define LOC_NOWHERE nullptr
+#define LOC_TROPHY_CASE "troph"
+
+// Lamp constants
+#define LAMP_MAX_LIFE 350
+#define LAMP_DIM_THRESHOLD 30
+#define LAMP_CRITICAL_THRESHOLD 10
+
+// Villain IDs
+#define VILLAIN_TROLL "troll"
+#define VILLAIN_THIEF "thief"
+#define VILLAIN_CYCLOPS "cyclo"
+
+// Villain health values
+#define TROLL_HEALTH 5
+#define THIEF_HEALTH 7
+#define CYCLOPS_HEALTH 127  // Max int8_t - can't be killed by normal combat
 
 // Room flags
 enum RoomFlags {
@@ -26,7 +48,7 @@ enum RoomFlags {
     RFLAG_MAZE = 0x10      // Maze room (confusing)
 };
 
-// Object flags
+// Object flags (basic - extended flags defined in GameData.h)
 enum ObjectFlags {
     OFLAG_TAKEABLE = 0x01,    // Can be picked up
     OFLAG_CONTAINER = 0x02,   // Can hold other objects
@@ -83,6 +105,33 @@ struct GameObject {
     uint16_t weight;
 };
 
+// Game state flags for puzzles
+struct GameFlags {
+    bool rugMoved;        // Rug moved, trap door visible
+    bool trollGone;       // Troll defeated
+    bool grateOpen;       // Grating unlocked
+    bool ropeTied;        // Rope tied to railing in dome
+    bool gatesOpen;       // Gates of Hades open
+    bool cyclopsGone;     // Cyclops defeated/fled
+    bool lampOn;          // Lamp is on
+    bool thiefActive;     // Thief is wandering
+
+    GameFlags() : rugMoved(false), trollGone(false), grateOpen(false),
+                  ropeTied(false), gatesOpen(false), cyclopsGone(false),
+                  lampOn(false), thiefActive(false) {}
+};
+
+// Villain state
+struct VillainState {
+    int8_t health;        // Current health (-1 = dead)
+    char roomId[MAX_ROOM_ID_LEN];  // Current location
+    bool active;          // Is actively tracking player
+
+    VillainState() : health(0), active(false) {
+        roomId[0] = '\0';
+    }
+};
+
 // Remote player info (from other mesh nodes)
 struct RemotePlayer {
     char playerId[8];
@@ -105,6 +154,15 @@ public:
     // Reset game to starting state
     void reset();
 
+    // Reset location only (keep inventory and score)
+    void resetLocation();
+
+    // Reset inventory only (drop all items, keep location)
+    void resetInventory();
+
+    // Check if first run (no saved username)
+    bool isFirstRun() const;
+
     // Process a player command, returns response text
     String processCommand(const char* command);
 
@@ -120,8 +178,7 @@ public:
     const char* getPlayerId() const { return playerId; }
 
     // Inventory management
-    int getInventoryCount() const { return inventoryCount; }
-    const char* getInventoryItem(int index) const;
+    int getInventoryCount() const;
     bool hasItem(const char* itemId) const;
 
     // Score and moves
@@ -137,6 +194,17 @@ public:
     bool saveGame();
     bool loadGame();
 
+    // Light/Darkness
+    bool isRoomLit() const;
+    bool hasLightSource() const;
+    int getLampLife() const { return lampLife; }
+
+    // Game flags
+    const GameFlags& getFlags() const { return gameFlags; }
+
+    // Combat
+    bool isVillainHere(const char* villainId) const;
+
 private:
     // Current state
     char currentRoomId[MAX_ROOM_ID_LEN];
@@ -144,21 +212,42 @@ private:
     char playerName[MAX_NAME_LEN];
     char playerId[8];
 
-    // Inventory (object IDs)
-    char inventory[MAX_INVENTORY][MAX_ROOM_ID_LEN];
-    int inventoryCount;
-
     // Score and statistics
     int score;
     int moves;
+    int lampLife;         // Lamp battery life remaining
+
+    // Game state flags
+    GameFlags gameFlags;
+
+    // Villain states
+    VillainState trollState;
+    VillainState thiefState;
+    VillainState cyclopsState;
 
     // Remote players
     std::map<String, RemotePlayer> remotePlayers;
 
+    // Object state (mutable - changes during gameplay)
+    char objectLocations[MAX_OBJECTS][MAX_ROOM_ID_LEN];  // Current location of each object
+    uint16_t objectFlags[MAX_OBJECTS];                    // Current flags for each object
+
     // Internal methods
     const Room* findRoom(const char* roomId);
-    GameObject* findObject(const char* objectId);
     bool moveToRoom(const char* roomId);
+    void initObjectState();
+
+    // Object finding
+    int findObjectByName(const char* name, bool inInventory, bool inRoom);
+    int findObjectInContainer(int containerIdx, const char* name);
+    bool isObjectVisible(int objIdx);
+    bool isObjectHere(int objIdx);  // In current room or containers in room
+    bool isObjectInInventory(int objIdx);
+    const char* getObjectLocation(int objIdx);
+    void setObjectLocation(int objIdx, const char* location);
+
+    // Get objects at a location
+    std::vector<int> getObjectsAtLocation(const char* location);
 
     // Command handlers
     String cmdLook();
@@ -170,9 +259,32 @@ private:
     String cmdOpen(const char* objectName);
     String cmdClose(const char* objectName);
     String cmdRead(const char* objectName);
+    String cmdLight(const char* objectName);
+    String cmdExtinguish(const char* objectName);
+    String cmdAttack(const char* target, const char* weapon);
+    String cmdMove(const char* objectName);
+    String cmdTie(const char* objectName);
+    String cmdUnlock(const char* objectName);
+    String cmdSay(const char* word);
+    String cmdWave(const char* objectName);
+    String cmdRing(const char* objectName);
 
     // Parse direction from string
     Direction parseDirection(const char* dirStr);
+
+    // Light/darkness helpers
+    bool checkDarkness();  // Returns true if too dark to proceed
+    void tickLamp();       // Decrease lamp life
+
+    // Villain helpers
+    void initVillains();
+    void tickVillains();   // Villain AI each turn
+    String villainAttack(const char* villainId);
+    bool checkVillainBlock(Direction dir);  // Does villain block exit?
+    int findVillainByName(const char* name);
+
+    // Score helpers
+    void checkTreasureScore();  // Award points for treasures in trophy case
 
     // Generate player ID from name
     void generatePlayerId();

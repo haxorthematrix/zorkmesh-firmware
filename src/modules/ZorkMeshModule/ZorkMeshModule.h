@@ -45,6 +45,15 @@ class ZorkMeshModule : public concurrency::OSThread
     // Process a command from the UI
     void processCommand(const char* command);
 
+    // Handle username set (from first-run prompt or settings)
+    void handleUsernameSet(const char* username);
+
+    // Handle settings menu action
+    void handleSettingsAction(int action);
+
+    // Called when splash screen finishes
+    void onSplashDone();
+
 #ifdef T_DECK
     // Handle keyboard input
     int handleInputEvent(const InputEvent* event);

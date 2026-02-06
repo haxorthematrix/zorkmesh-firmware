@@ -12,19 +12,46 @@
  *
  * Layout (320x240 landscape):
  * +----------------------------------+
- * | Status Bar (room, score, batt)   | 20px
+ * | Status Bar (room, score, batt)   | 24px
  * +----------------------------------+
  * |                                  |
- * |     Terminal Output Area         | 190px
+ * |     Terminal Output Area         | 188px
  * |     (scrollable text)            |
  * |                                  |
  * +----------------------------------+
- * | > command input                  | 30px
+ * | > command input                  | 28px
+ * +----------------------------------+
+ *
+ * Settings Menu:
+ * +----------------------------------+
+ * |       ZorkMesh Settings          |
+ * +----------------------------------+
+ * | Player: [username]               |
+ * | Score: X  Moves: Y  Lamp: Z      |
+ * +----------------------------------+
+ * | [Change Username]                |
+ * | [Reset Location]                 |
+ * | [Reset Inventory]                |
+ * | [New Game]                       |
+ * | [Back to Game]                   |
  * +----------------------------------+
  */
 
-// Callback type for command input
+// Callback types
 typedef std::function<void(const char* command)> CommandCallback;
+typedef std::function<void(const char* username)> UsernameCallback;
+typedef std::function<void(int action)> SettingsCallback;
+typedef std::function<void()> SplashDoneCallback;
+
+// Settings menu actions
+enum SettingsAction {
+    SETTINGS_CHANGE_USERNAME = 0,
+    SETTINGS_RESET_LOCATION,
+    SETTINGS_RESET_INVENTORY,
+    SETTINGS_NEW_GAME,
+    SETTINGS_BACK_TO_GAME,
+    SETTINGS_EXIT_TO_MESHTASTIC
+};
 
 class GameUI {
 public:
@@ -52,16 +79,45 @@ public:
     // Set callback for when user enters a command
     void setCommandCallback(CommandCallback callback) { cmdCallback = callback; }
 
+    // Set callback for username entry
+    void setUsernameCallback(UsernameCallback callback) { usernameCallback = callback; }
+
+    // Set callback for settings actions
+    void setSettingsCallback(SettingsCallback callback) { settingsCallback = callback; }
+
+    // Set callback for when splash screen finishes
+    void setSplashDoneCallback(SplashDoneCallback callback) { splashDoneCallback = callback; }
+
     // Process keyboard input (called from input handler)
     void onKeyPress(uint8_t key);
 
     // Get the LVGL screen object
     lv_obj_t* getScreen() const { return screen; }
 
+    // Username prompt (for first run)
+    void showUsernamePrompt(const char* currentName = nullptr);
+    void hideUsernamePrompt();
+    bool isUsernamePromptVisible() const { return usernamePromptVisible; }
+
+    // Settings menu
+    void showSettingsMenu(const char* username, int score, int moves, int lampLife);
+    void hideSettingsMenu();
+    bool isSettingsMenuVisible() const { return settingsMenuVisible; }
+
+    // Update stats display in settings
+    void updateSettingsStats(int score, int moves, int lampLife);
+
+    // Splash screen
+    void showSplashScreen();
+    void hideSplashScreen();
+    bool isSplashVisible() const { return splashVisible; }
+
 private:
     // Screen and widgets
     lv_obj_t* screen;           // Main game screen
     lv_obj_t* statusBar;        // Top status bar
+    lv_obj_t* backButton;       // Back button to exit game
+    lv_obj_t* settingsButton;   // Settings button
     lv_obj_t* roomLabel;        // Room name label
     lv_obj_t* scoreLabel;       // Score display
     lv_obj_t* batteryLabel;     // Battery indicator
@@ -70,10 +126,30 @@ private:
     lv_obj_t* promptLabel;      // ">" prompt
     lv_obj_t* inputField;       // Text input field
 
+    // Username prompt widgets
+    lv_obj_t* usernameDialog;       // Modal dialog for username
+    lv_obj_t* usernameInput;        // Text input for username
+    lv_obj_t* usernameOkButton;     // OK button
+    bool usernamePromptVisible;
+
+    // Settings menu widgets
+    lv_obj_t* settingsScreen;       // Settings screen
+    lv_obj_t* settingsPlayerLabel;  // Player name display
+    lv_obj_t* settingsStatsLabel;   // Stats display
+    bool settingsMenuVisible;
+
+    // Splash screen widgets
+    lv_obj_t* splashScreen;         // Splash screen
+    lv_timer_t* splashTimer;        // Timer to auto-dismiss splash
+    bool splashVisible;
+
     // State
     bool visible;
     bool initialized;
     CommandCallback cmdCallback;
+    UsernameCallback usernameCallback;
+    SettingsCallback settingsCallback;
+    SplashDoneCallback splashDoneCallback;
 
     // Command history
     static const int MAX_HISTORY = 10;
@@ -90,16 +166,27 @@ private:
     void createStatusBar();
     void createOutputArea();
     void createInputLine();
+    void createUsernameDialog();
+    void createSettingsScreen();
+    void createSplashScreen();
     void submitCommand();
+    void submitUsername();
     void historyUp();
     void historyDown();
     void addToHistory(const char* cmd);
 
     // Static callbacks for LVGL
     static void inputEventCallback(lv_event_t* e);
+    static void usernameOkCallback(lv_event_t* e);
+    static void settingsButtonCallback(lv_event_t* e);
+    static void settingsMenuCallback(lv_event_t* e);
+    static void splashTimerCallback(lv_timer_t* timer);
 };
 
 // Global instance
 extern GameUI* gameUI;
+
+// Function to return to Meshtastic main screen (defined in ZorkMeshModule.cpp)
+extern void zorkMeshReturnToMain();
 
 #endif // T_DECK

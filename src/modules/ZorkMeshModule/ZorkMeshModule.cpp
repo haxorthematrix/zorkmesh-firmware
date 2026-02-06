@@ -2,6 +2,10 @@
 #include "GameEngine.h"
 #ifdef T_DECK
 #include "GameUI.h"
+// Device UI integration
+#include "screens.h"  // For device-ui objects
+#include "fonts.h"    // For custom fonts (ui_font_montserrat_*)
+#include <lvgl.h>
 #endif
 #include "MeshService.h"
 #include "NodeDB.h"
@@ -16,6 +20,36 @@ ZorkMeshModuleRadio *zorkMeshModuleRadio = nullptr;
 
 // Use PRIVATE_APP port for game messages
 static const meshtastic_PortNum ZORKMESH_PORTNUM = meshtastic_PortNum_PRIVATE_APP;
+
+#ifdef T_DECK
+// ZorkMesh button in Tools panel
+static lv_obj_t *zorkMeshButton = nullptr;
+static lv_obj_t *zorkMeshButtonLabel = nullptr;
+static lv_obj_t *mainScreenRef = nullptr;  // Reference to main Meshtastic screen
+
+// Button click callback - launches ZorkMesh
+static void zorkMeshButtonCallback(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        LOG_INFO("ZorkMesh button clicked - launching game");
+        if (zorkMeshModule) {
+            // Save reference to current screen before switching
+            mainScreenRef = lv_screen_active();
+            zorkMeshModule->showGameUI();
+        }
+    }
+}
+
+// Called from GameUI to return to Meshtastic
+void zorkMeshReturnToMain()
+{
+    if (mainScreenRef) {
+        lv_screen_load(mainScreenRef);
+        LOG_INFO("ZorkMesh: Returned to main Meshtastic screen");
+    }
+}
+#endif
 
 /*
  * ZorkMeshModule - Main thread for periodic tasks
@@ -44,6 +78,21 @@ void ZorkMeshModule::startGame()
             // Set command callback
             gameUI->setCommandCallback([this](const char* cmd) {
                 this->processCommand(cmd);
+            });
+
+            // Set username callback
+            gameUI->setUsernameCallback([this](const char* username) {
+                this->handleUsernameSet(username);
+            });
+
+            // Set settings callback
+            gameUI->setSettingsCallback([this](int action) {
+                this->handleSettingsAction(action);
+            });
+
+            // Set splash done callback (handles first-run vs returning player)
+            gameUI->setSplashDoneCallback([this]() {
+                this->onSplashDone();
             });
 
             LOG_INFO("ZorkMesh GameUI initialized");
@@ -96,25 +145,37 @@ void ZorkMeshModule::showGameUI()
     }
 
     if (gameUI) {
-        gameUI->show();
+        gameUI->show();  // Shows splash screen first
         uiVisible = true;
 
         // Start observing keyboard input when UI is visible
         if (inputBroker) {
             inputObserver.observe(inputBroker);
         }
-
-        // Show initial room description
-        if (gameEngine) {
-            String look = gameEngine->processCommand("LOOK");
-            gameUI->println(look.c_str());
-            gameUI->setRoomName(gameEngine->getCurrentRoom() ?
-                gameEngine->getCurrentRoom()->name : "Unknown");
-            gameUI->setScore(gameEngine->getScore(), gameEngine->getMoves());
-        }
     }
 #endif
 }
+
+#ifdef T_DECK
+void ZorkMeshModule::onSplashDone()
+{
+    // Called after splash screen finishes - handle first run vs returning player
+    if (!gameEngine || !gameUI) return;
+
+    const char* playerName = gameEngine->getPlayerName();
+    if (!playerName || strlen(playerName) == 0) {
+        // First run - show username prompt
+        gameUI->showUsernamePrompt(nullptr);
+    } else {
+        // Returning player - show room description
+        String look = gameEngine->processCommand("LOOK");
+        gameUI->println(look.c_str());
+        gameUI->setRoomName(gameEngine->getCurrentRoom() ?
+            gameEngine->getCurrentRoom()->name : "Unknown");
+        gameUI->setScore(gameEngine->getScore(), gameEngine->getMoves());
+    }
+}
+#endif
 
 void ZorkMeshModule::hideGameUI()
 {
@@ -126,6 +187,93 @@ void ZorkMeshModule::hideGameUI()
     }
 #endif
 }
+
+#ifdef T_DECK
+void ZorkMeshModule::handleUsernameSet(const char* username)
+{
+    if (!gameEngine || !gameUI) return;
+
+    gameEngine->setPlayerName(username);
+    gameEngine->saveGame();
+
+    // Show welcome message and initial look
+    gameUI->clear();
+    gameUI->println("=== ZorkMesh ===");
+    gameUI->print("Welcome, ");
+    gameUI->print(username);
+    gameUI->println("!");
+    gameUI->println("");
+
+    String look = gameEngine->processCommand("LOOK");
+    gameUI->println(look.c_str());
+    gameUI->setRoomName(gameEngine->getCurrentRoom() ?
+        gameEngine->getCurrentRoom()->name : "Unknown");
+    gameUI->setScore(gameEngine->getScore(), gameEngine->getMoves());
+
+    LOG_INFO("ZorkMesh: Player name set to %s", username);
+}
+
+void ZorkMeshModule::handleSettingsAction(int action)
+{
+    if (!gameEngine || !gameUI) return;
+
+    switch (action) {
+        case SETTINGS_RESET_LOCATION:
+            // Reset player to starting location
+            gameEngine->resetLocation();
+            gameUI->println("[Location reset to West of House]");
+            {
+                String look = gameEngine->processCommand("LOOK");
+                gameUI->println(look.c_str());
+            }
+            gameUI->setRoomName(gameEngine->getCurrentRoom() ?
+                gameEngine->getCurrentRoom()->name : "Unknown");
+            gameEngine->saveGame();
+            break;
+
+        case SETTINGS_RESET_INVENTORY:
+            // Drop all items and reset to starting inventory
+            gameEngine->resetInventory();
+            gameUI->println("[Inventory reset]");
+            gameEngine->saveGame();
+            break;
+
+        case SETTINGS_NEW_GAME:
+            // Full game reset
+            gameEngine->reset();
+            gameUI->clear();
+            gameUI->println("=== New Game Started ===");
+            gameUI->println("");
+            {
+                String look = gameEngine->processCommand("LOOK");
+                gameUI->println(look.c_str());
+            }
+            gameUI->setRoomName(gameEngine->getCurrentRoom() ?
+                gameEngine->getCurrentRoom()->name : "Unknown");
+            gameUI->setScore(gameEngine->getScore(), gameEngine->getMoves());
+            // Don't save - let player make progress first
+            break;
+
+        default:
+            break;
+    }
+}
+#else
+// Stub implementations for non-T_DECK builds
+void ZorkMeshModule::handleUsernameSet(const char* username)
+{
+    (void)username;
+}
+
+void ZorkMeshModule::handleSettingsAction(int action)
+{
+    (void)action;
+}
+
+void ZorkMeshModule::onSplashDone()
+{
+}
+#endif
 
 void ZorkMeshModule::processCommand(const char* command)
 {
@@ -167,15 +315,33 @@ void ZorkMeshModule::processCommand(const char* command)
 }
 
 #ifdef T_DECK
+// Launch key: z (for Zork - no modifier needed)
+#define ZORKMESH_LAUNCH_KEY 'z'
+
 int ZorkMeshModule::handleInputEvent(const InputEvent* event)
 {
-    // Only handle input when game UI is visible
-    if (!uiVisible || !gameUI) {
+    // Check for launch key (TAB) when game UI is NOT visible
+    if (!uiVisible) {
+        if (event->kbchar == ZORKMESH_LAUNCH_KEY) {
+            LOG_INFO("ZorkMesh: TAB key pressed, launching game");
+            showGameUI();
+            return 1; // Consumed
+        }
         return 0; // Let other handlers process this
+    }
+
+    // Game UI is visible - handle game input
+    if (!gameUI) {
+        return 0;
     }
 
     // Handle the keyboard character
     if (event->kbchar != 0) {
+        // ESC key exits game
+        if (event->kbchar == 0x1B) {
+            hideGameUI();
+            return 1;
+        }
         gameUI->onKeyPress(event->kbchar);
         return 1; // Consumed
     }
@@ -211,8 +377,77 @@ int32_t ZorkMeshModule::runOnce()
             zorkMeshModuleRadio = new ZorkMeshModuleRadio();
             LOG_INFO("ZorkMesh Radio module created");
         }
+
+#ifdef T_DECK
+        // Also observe keyboard input for future use
+        if (inputBroker) {
+            inputObserver.observe(inputBroker);
+        }
+#endif
+
         firstTime = false;
     }
+
+#ifdef T_DECK
+    // Customize boot screen with ZorkMesh branding (runs once when boot_screen is available)
+    static bool bootScreenCustomized = false;
+    if (!bootScreenCustomized && objects.boot_screen != nullptr && objects.boot_logo != nullptr) {
+        bootScreenCustomized = true;
+        LOG_INFO("ZorkMesh: Customizing boot screen");
+
+        // Keep Meshtastic logo centered but move up slightly to make room
+        lv_obj_set_pos(objects.boot_logo, 0, -40);
+
+        // Add "ZorkMesh Edition" text below the logo
+        lv_obj_t* zorkLabel = lv_label_create(objects.boot_screen);
+        lv_label_set_text(zorkLabel, "ZorkMesh Edition");
+        lv_obj_set_style_text_color(zorkLabel, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_font(zorkLabel, &ui_font_montserrat_16, 0);
+        lv_obj_align(zorkLabel, LV_ALIGN_CENTER, 0, 30);
+
+        // Modify existing Meshtastic URL to show both sites
+        if (objects.meshtastic_url) {
+            lv_label_set_text(objects.meshtastic_url, "meshtastic.org  |  zorkmesh.com");
+        }
+
+        LOG_INFO("ZorkMesh: Boot screen customized");
+    }
+
+    // Keep trying to add ZorkMesh button until device-ui is ready
+    // The UI initializes after modules, so we need to wait
+    static uint32_t lastUICheck = 0;
+    uint32_t currentTime = millis();
+    if (!zorkMeshButton && (currentTime - lastUICheck > 1000)) {
+        lastUICheck = currentTime;
+        LOG_INFO("ZorkMesh: Checking for device UI... main_screen=%p, tab_page_tools=%p",
+                 (void*)objects.main_screen, (void*)objects.tab_page_tools);
+    }
+
+    if (!zorkMeshButton && objects.main_screen != nullptr && objects.tab_page_tools != nullptr) {
+        LOG_INFO("ZorkMesh: Device UI ready, adding button to Tools panel");
+
+        // Create button (same style as other tool buttons)
+        zorkMeshButton = lv_button_create(objects.tab_page_tools);
+        lv_obj_set_size(zorkMeshButton, LV_PCT(95), 30);
+        lv_obj_set_style_align(zorkMeshButton, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(zorkMeshButton, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(zorkMeshButton, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(zorkMeshButton, lv_color_hex(0x2d2d2d), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(zorkMeshButton, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(zorkMeshButton, lv_color_hex(0x67ea94), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        // Create label
+        zorkMeshButtonLabel = lv_label_create(zorkMeshButton);
+        lv_label_set_text(zorkMeshButtonLabel, "ZorkMesh Game");
+        lv_obj_center(zorkMeshButtonLabel);
+        lv_obj_set_style_text_color(zorkMeshButtonLabel, lv_color_hex(0x67ea94), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        // Add click handler
+        lv_obj_add_event_cb(zorkMeshButton, zorkMeshButtonCallback, LV_EVENT_CLICKED, nullptr);
+
+        LOG_INFO("ZorkMesh: Button added to Tools panel successfully");
+    }
+#endif
 
     // If game is not active, sleep longer
     if (!gameActive) {
