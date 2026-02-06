@@ -415,37 +415,51 @@ int32_t ZorkMeshModule::runOnce()
 
     // Keep trying to add ZorkMesh button until device-ui is ready
     // The UI initializes after modules, so we need to wait
-    static uint32_t lastUICheck = 0;
-    uint32_t currentTime = millis();
-    if (!zorkMeshButton && (currentTime - lastUICheck > 1000)) {
-        lastUICheck = currentTime;
-        LOG_INFO("ZorkMesh: Checking for device UI... main_screen=%p, tab_page_tools=%p",
-                 (void*)objects.main_screen, (void*)objects.tab_page_tools);
-    }
+    if (!zorkMeshButton && objects.main_screen != nullptr && objects.button_panel != nullptr) {
+        LOG_INFO("ZorkMesh: Device UI ready, adding button to main menu bar");
 
-    if (!zorkMeshButton && objects.main_screen != nullptr && objects.tab_page_tools != nullptr) {
-        LOG_INFO("ZorkMesh: Device UI ready, adding button to Tools panel");
+        // Resize existing buttons to fit 7 buttons in the panel (was 6 at 36x36)
+        // New size: 32x32 to fit all buttons within 240px height
+        const int newButtonSize = 32;
+        if (objects.home_button) lv_obj_set_size(objects.home_button, newButtonSize, newButtonSize);
+        if (objects.nodes_button) lv_obj_set_size(objects.nodes_button, newButtonSize, newButtonSize);
+        if (objects.groups_button) lv_obj_set_size(objects.groups_button, newButtonSize, newButtonSize);
+        if (objects.messages_button) lv_obj_set_size(objects.messages_button, newButtonSize, newButtonSize);
+        if (objects.map_button) lv_obj_set_size(objects.map_button, newButtonSize, newButtonSize);
+        if (objects.settings_button) lv_obj_set_size(objects.settings_button, newButtonSize, newButtonSize);
 
-        // Create button (same style as other tool buttons)
-        zorkMeshButton = lv_button_create(objects.tab_page_tools);
-        lv_obj_set_size(zorkMeshButton, LV_PCT(95), 30);
-        lv_obj_set_style_align(zorkMeshButton, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_shadow_width(zorkMeshButton, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(zorkMeshButton, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+        // Reduce padding in button panel to fit all buttons
+        lv_obj_set_style_pad_top(objects.button_panel, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_bottom(objects.button_panel, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_row(objects.button_panel, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        // Create ZorkMesh button in the main menu bar
+        zorkMeshButton = lv_btn_create(objects.button_panel);
+        lv_obj_set_size(zorkMeshButton, newButtonSize, newButtonSize);
+        lv_obj_add_flag(zorkMeshButton, LV_OBJ_FLAG_SCROLL_CHAIN);
+        lv_obj_remove_flag(zorkMeshButton, (lv_obj_flag_t)(LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
+
+        // Style to match other menu buttons
+        lv_obj_set_style_radius(zorkMeshButton, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(zorkMeshButton, lv_color_hex(0x2d2d2d), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(zorkMeshButton, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(zorkMeshButton, lv_color_hex(0x67ea94), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(zorkMeshButton, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(zorkMeshButton, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(zorkMeshButton, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-        // Create label
+        // Pressed state
+        lv_obj_set_style_bg_color(zorkMeshButton, lv_color_hex(0x67ea94), LV_PART_MAIN | LV_STATE_PRESSED);
+
+        // Create "Z" label as icon (since we don't have a custom image)
         zorkMeshButtonLabel = lv_label_create(zorkMeshButton);
-        lv_label_set_text(zorkMeshButtonLabel, "ZorkMesh Game");
+        lv_label_set_text(zorkMeshButtonLabel, "Z");
         lv_obj_center(zorkMeshButtonLabel);
         lv_obj_set_style_text_color(zorkMeshButtonLabel, lv_color_hex(0x67ea94), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(zorkMeshButtonLabel, &ui_font_montserrat_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
         // Add click handler
         lv_obj_add_event_cb(zorkMeshButton, zorkMeshButtonCallback, LV_EVENT_CLICKED, nullptr);
 
-        LOG_INFO("ZorkMesh: Button added to Tools panel successfully");
+        LOG_INFO("ZorkMesh: Button added to main menu bar successfully");
     }
 #endif
 
