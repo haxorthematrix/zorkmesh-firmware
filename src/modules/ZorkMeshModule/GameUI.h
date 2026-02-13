@@ -2,7 +2,7 @@
 
 #include "configuration.h"
 
-#ifdef T_DECK
+#if defined(HAS_TFT)
 
 #include <lvgl.h>
 #include <functional>
@@ -181,6 +181,18 @@ private:
     static void settingsButtonCallback(lv_event_t* e);
     static void settingsMenuCallback(lv_event_t* e);
     static void splashTimerCallback(lv_timer_t* timer);
+    static void deferredPrintCallback(lv_timer_t* timer);
+
+    // Deferred print queue (for thread-safe LVGL updates)
+    static const int MAX_DEFERRED_MSGS = 4;
+    static const int MAX_DEFERRED_LEN = 80;
+    char deferredMsgs[MAX_DEFERRED_MSGS][MAX_DEFERRED_LEN];
+    int deferredMsgCount;
+    lv_timer_t* deferredTimer;
+
+public:
+    // Queue a message for deferred printing (thread-safe)
+    void printDeferred(const char* text);
 };
 
 // Global instance
@@ -189,4 +201,4 @@ extern GameUI* gameUI;
 // Function to return to Meshtastic main screen (defined in ZorkMeshModule.cpp)
 extern void zorkMeshReturnToMain();
 
-#endif // T_DECK
+#endif // HAS_TFT

@@ -1,6 +1,6 @@
 #include "configuration.h"
 
-#ifdef T_DECK
+#if defined(HAS_TFT)
 
 #include "GameUI.h"
 #include "GameEngine.h"
@@ -23,6 +23,9 @@ GameUI* gameUI = nullptr;
 #define COLOR_TEXT      lv_color_hex(0x00FF00)  // Green text (classic terminal)
 #define COLOR_STATUS_BG lv_color_hex(0x003300)  // Dark green status bar
 #define COLOR_INPUT_BG  lv_color_hex(0x001100)  // Very dark green input
+
+// Max output text size (prevents memory exhaustion)
+#define MAX_OUTPUT_TEXT_LEN 4000
 
 // Font - use built-in font (montserrat 16 is available)
 #define GAME_FONT       &lv_font_montserrat_16
@@ -61,8 +64,11 @@ GameUI::GameUI()
     , splashDoneCallback(nullptr)
     , historyCount(0)
     , historyIndex(-1)
+    , deferredMsgCount(0)
+    , deferredTimer(nullptr)
 {
     memset(history, 0, sizeof(history));
+    memset(deferredMsgs, 0, sizeof(deferredMsgs));
 }
 
 GameUI::~GameUI()
@@ -185,18 +191,12 @@ void GameUI::createOutputArea()
     lv_obj_set_style_border_width(outputArea, 0, 0);
     lv_obj_set_style_pad_all(outputArea, 4, 0);
 
-    // Make it read-only but still scrollable
+    // Make it read-only and non-scrollable (scrolling causes crashes)
     lv_textarea_set_cursor_click_pos(outputArea, false);
 
-    // Enable scrolling - keep clickable for trackball/touch scroll
-    lv_obj_set_scroll_dir(outputArea, LV_DIR_VER);
-    lv_obj_add_flag(outputArea, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Show scrollbar when needed
-    lv_obj_set_scrollbar_mode(outputArea, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_width(outputArea, 6, LV_PART_SCROLLBAR);
-    lv_obj_set_style_bg_color(outputArea, COLOR_TEXT, LV_PART_SCROLLBAR);
-    lv_obj_set_style_bg_opa(outputArea, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    // DISABLE scrolling entirely - causes crashes
+    lv_obj_remove_flag(outputArea, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(outputArea, LV_SCROLLBAR_MODE_OFF);
 
     // Welcome message
     lv_textarea_set_text(outputArea,
@@ -287,14 +287,36 @@ void GameUI::hide()
     LOG_INFO("GameUI: Screen hidden");
 }
 
+// Static buffer for text accumulation (avoid malloc)
+static char s_textBuf[MAX_OUTPUT_TEXT_LEN + 128];
+
 void GameUI::print(const char* text)
 {
     if (!outputArea) return;
+    if (!text || text[0] == '\0') return;
 
-    // Append text to output area
-    lv_textarea_add_text(outputArea, text);
+    // Get current text
+    const char* current = lv_textarea_get_text(outputArea);
+    size_t currentLen = current ? strlen(current) : 0;
+    size_t newLen = strlen(text);
 
-    // Auto-scroll to bottom
+    // Build new text in static buffer (avoid lv_textarea_add_text which may cause issues)
+    if (currentLen + newLen >= MAX_OUTPUT_TEXT_LEN) {
+        // Too long - start fresh with just the new text
+        snprintf(s_textBuf, sizeof(s_textBuf), "[...]\n%s", text);
+    } else {
+        // Append to existing
+        if (currentLen > 0) {
+            memcpy(s_textBuf, current, currentLen);
+        }
+        memcpy(s_textBuf + currentLen, text, newLen);
+        s_textBuf[currentLen + newLen] = '\0';
+    }
+
+    // Set full text at once (safer than incremental add)
+    lv_textarea_set_text(outputArea, s_textBuf);
+
+    // Move cursor to end
     lv_textarea_set_cursor_pos(outputArea, LV_TEXTAREA_CURSOR_LAST);
 }
 
@@ -395,15 +417,9 @@ void GameUI::onKeyPress(uint8_t key)
         case 0x01: // Down arrow (custom code from ZorkMeshModule)
             historyDown();
             break;
-        case 0x02: // Page Up (custom code) - scroll output up
-            if (outputArea) {
-                lv_obj_scroll_by(outputArea, 0, 80, LV_ANIM_ON);
-            }
-            break;
-        case 0x03: // Page Down (custom code) - scroll output down
-            if (outputArea) {
-                lv_obj_scroll_by(outputArea, 0, -80, LV_ANIM_ON);
-            }
+        case 0x02: // Page Up - disabled for stability
+        case 0x03: // Page Down - disabled for stability
+            // Scrolling disabled - causes crashes on some LVGL versions
             break;
         default:
             // Regular character
@@ -849,4 +865,59 @@ void GameUI::splashTimerCallback(lv_timer_t* timer)
     }
 }
 
-#endif // T_DECK
+// ============ Deferred Print (Thread-safe LVGL updates) ============
+
+void GameUI::printDeferred(const char* text)
+{
+    if (!text || text[0] == '\0') return;
+
+    // Add to deferred queue (thread-safe - just writes to array)
+    if (deferredMsgCount < MAX_DEFERRED_MSGS) {
+        strncpy(deferredMsgs[deferredMsgCount], text, MAX_DEFERRED_LEN - 1);
+        deferredMsgs[deferredMsgCount][MAX_DEFERRED_LEN - 1] = '\0';
+        deferredMsgCount++;
+
+        LOG_INFO("GameUI: Queued deferred msg %d: %s", deferredMsgCount, text);
+
+        // Start timer if not running (timer runs in LVGL context)
+        if (!deferredTimer) {
+            deferredTimer = lv_timer_create(deferredPrintCallback, 10, this);
+            lv_timer_set_repeat_count(deferredTimer, -1);  // Repeat until stopped
+            LOG_INFO("GameUI: Started deferred print timer");
+        }
+    } else {
+        LOG_WARN("GameUI: Deferred queue full, dropping message");
+    }
+}
+
+void GameUI::deferredPrintCallback(lv_timer_t* timer)
+{
+    GameUI* ui = (GameUI*)lv_timer_get_user_data(timer);
+    if (!ui) return;
+
+    // Process one message per callback (runs in LVGL context - safe!)
+    if (ui->deferredMsgCount > 0) {
+        const char* msg = ui->deferredMsgs[0];
+        LOG_INFO("GameUI: Deferred print: %s", msg);
+
+        // Actually print (now we're in LVGL context)
+        ui->println(msg);
+
+        // Shift queue down
+        for (int i = 0; i < ui->deferredMsgCount - 1; i++) {
+            memcpy(ui->deferredMsgs[i], ui->deferredMsgs[i + 1], MAX_DEFERRED_LEN);
+        }
+        ui->deferredMsgCount--;
+    }
+
+    // Stop timer when queue is empty
+    if (ui->deferredMsgCount == 0) {
+        if (ui->deferredTimer) {
+            lv_timer_delete(ui->deferredTimer);
+            ui->deferredTimer = nullptr;
+            LOG_INFO("GameUI: Stopped deferred print timer");
+        }
+    }
+}
+
+#endif // HAS_TFT

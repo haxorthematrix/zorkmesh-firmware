@@ -2,7 +2,7 @@
 
 #include "SinglePortModule.h"
 #include "concurrency/OSThread.h"
-#ifdef T_DECK
+#if defined(HAS_TFT)
 #include "input/InputBroker.h"
 #endif
 
@@ -54,7 +54,7 @@ class ZorkMeshModule : public concurrency::OSThread
     // Called when splash screen finishes
     void onSplashDone();
 
-#ifdef T_DECK
+#if defined(HAS_TFT)
     // Handle keyboard input
     int handleInputEvent(const InputEvent* event);
 #endif
@@ -68,7 +68,7 @@ class ZorkMeshModule : public concurrency::OSThread
     uint32_t lastHeartbeat = 0;
     bool uiVisible = false;
 
-#ifdef T_DECK
+#if defined(HAS_TFT)
     // Keyboard observer
     CallbackObserver<ZorkMeshModule, const InputEvent*> inputObserver =
         CallbackObserver<ZorkMeshModule, const InputEvent*>(this, &ZorkMeshModule::handleInputEvent);
@@ -85,8 +85,11 @@ class ZorkMeshModuleRadio : public SinglePortModule
   public:
     ZorkMeshModuleRadio();
 
-    // Send a game message to the mesh
+    // Queue a game message for sending (thread-safe)
     void sendGameMessage(const char* jsonPayload);
+
+    // Actually send a message immediately (must be called from main thread)
+    void sendDirect(const char* jsonPayload);
 
     // Send player join message
     void sendJoin(const char* playerName, const char* roomId);

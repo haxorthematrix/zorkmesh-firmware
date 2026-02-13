@@ -251,7 +251,8 @@ String GameEngine::processCommand(const char* command)
         return "Commands: LOOK, GO, TAKE, DROP, I, EXAMINE, OPEN, CLOSE, READ\n"
                "LIGHT, EXTINGUISH, ATTACK, MOVE, TIE, UNLOCK, SAY, WAVE, RING\n"
                "SCORE, SAVE, RESTORE, QUIT\n"
-               "Dirs: N S E W NE NW SE SW UP DOWN IN OUT";
+               "Dirs: N S E W NE NW SE SW UP DOWN IN OUT\n"
+               "Multiplayer: CHAT <msg>, WHO";
     }
 
     // Lamp commands

@@ -108,7 +108,7 @@
 #endif
 
 // ZorkMesh - Multiplayer Zork over mesh network
-#ifdef T_DECK
+#if defined(HAS_TFT)
 #include "modules/ZorkMeshModule/ZorkMeshModule.h"
 #endif
 
@@ -304,8 +304,8 @@ void setupModules()
         new RangeTestModule();
 #endif
 
-    // ZorkMesh - Multiplayer Zork game module (T-Deck only)
-#ifdef T_DECK
+    // ZorkMesh - Multiplayer Zork game module (TFT displays only)
+#if defined(HAS_TFT)
     zorkMeshModule = new ZorkMeshModule();
     // Game engine will be created when game is started from UI
 #endif
