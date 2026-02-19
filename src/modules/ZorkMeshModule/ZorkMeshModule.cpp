@@ -507,6 +507,33 @@ void ZorkMeshModule::processCommand(const char* command)
     // Process command
     String response = gameEngine->processCommand(command);
 
+    // For LOOK command, append info about other players in the room
+    if (strncasecmp(command, "LOOK", 4) == 0 || strcasecmp(command, "L") == 0) {
+        const char* currentRoom = gameEngine->getCurrentRoomId();
+        RemotePlayer* playersHere[MAX_REMOTE_PLAYERS];
+        int count = getPlayersInRoom(currentRoom, playersHere, MAX_REMOTE_PLAYERS);
+
+        if (count > 0) {
+            response += "\n";
+            if (count == 1) {
+                response += playersHere[0]->name;
+                response += " is here.";
+            } else {
+                for (int i = 0; i < count; i++) {
+                    if (i > 0) {
+                        if (i == count - 1) {
+                            response += " and ";
+                        } else {
+                            response += ", ";
+                        }
+                    }
+                    response += playersHere[i]->name;
+                }
+                response += " are here.";
+            }
+        }
+    }
+
 #if defined(HAS_TFT)
     // Display response
     if (gameUI) {
@@ -993,9 +1020,20 @@ static void processIncomingJson(const char* jsonStr)
             strncpy(s_name, s_playerIdBuf, sizeof(s_name) - 1);
         }
 
-        // DEBUG: Re-enable queueMessage with literal to capture crash
-        queueMessage("[Player joined]");
-        LOG_INFO("ZorkMesh: PJ queued");
+        // Add player to tracking
+        portENTER_CRITICAL(&playerMutex);
+        RemotePlayer* player = findOrCreatePlayerLocked(s_playerIdBuf);
+        if (player) {
+            strncpy(player->name, s_name, sizeof(player->name) - 1);
+            strncpy(player->roomId, s_roomId, sizeof(player->roomId) - 1);
+            player->lastSeen = millis();
+        }
+        portEXIT_CRITICAL(&playerMutex);
+
+        // Show join message with player name
+        snprintf(s_msg, sizeof(s_msg), "[%s joined]", s_name);
+        queueMessage(s_msg);
+        LOG_INFO("ZorkMesh: Player %s joined in room %s", s_name, s_roomId);
     }
     else if (strcmp(s_msgType, "PL") == 0) {
         // Player Leave
