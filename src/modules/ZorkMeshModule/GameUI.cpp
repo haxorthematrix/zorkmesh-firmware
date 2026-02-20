@@ -56,6 +56,7 @@ GameUI::GameUI()
     , splashScreen(nullptr)
     , splashTimer(nullptr)
     , splashVisible(false)
+    , inputGroup(nullptr)
     , visible(false)
     , initialized(false)
     , cmdCallback(nullptr)
@@ -191,12 +192,20 @@ void GameUI::createOutputArea()
     lv_obj_set_style_border_width(outputArea, 0, 0);
     lv_obj_set_style_pad_all(outputArea, 4, 0);
 
-    // Make it read-only and non-scrollable (scrolling causes crashes)
+    // Make it read-only but allow scrolling
     lv_textarea_set_cursor_click_pos(outputArea, false);
 
-    // DISABLE scrolling entirely - causes crashes
-    lv_obj_remove_flag(outputArea, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(outputArea, LV_SCROLLBAR_MODE_OFF);
+    // Enable scrolling
+    lv_obj_add_flag(outputArea, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(outputArea, LV_SCROLLBAR_MODE_AUTO);
+
+    // Prevent output area from receiving focus (critical for keyboard input)
+    lv_obj_remove_flag(outputArea, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_set_style_anim_duration(outputArea, 0, LV_PART_CURSOR);
+
+    // Hide the cursor completely
+    lv_textarea_set_cursor_click_pos(outputArea, false);
+    lv_obj_set_style_opa(outputArea, LV_OPA_TRANSP, LV_PART_CURSOR);
 
     // Welcome message
     lv_textarea_set_text(outputArea,
@@ -243,6 +252,10 @@ void GameUI::createInputLine()
 
     // Event handler for Enter key
     lv_obj_add_event_cb(inputField, inputEventCallback, LV_EVENT_READY, this);
+
+    // Make input field focusable and give it initial focus
+    lv_obj_add_flag(inputField, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_state(inputField, LV_STATE_FOCUSED);
 }
 
 void GameUI::inputEventCallback(lv_event_t* e)
@@ -250,6 +263,15 @@ void GameUI::inputEventCallback(lv_event_t* e)
     GameUI* ui = (GameUI*)lv_event_get_user_data(e);
     if (ui) {
         ui->submitCommand();
+    }
+}
+
+void GameUI::outputScrollCallback(lv_event_t* e)
+{
+    GameUI* ui = (GameUI*)lv_event_get_user_data(e);
+    if (ui && ui->inputField) {
+        // Refocus input field after scrolling output area
+        lv_obj_add_state(ui->inputField, LV_STATE_FOCUSED);
     }
 }
 
@@ -287,6 +309,18 @@ void GameUI::hide()
     LOG_INFO("GameUI: Screen hidden");
 }
 
+void GameUI::ensureInputFocus()
+{
+    // Only act if main game screen is active (not splash, settings, or username prompt)
+    if (!visible || splashVisible || settingsMenuVisible || usernamePromptVisible) {
+        return;
+    }
+
+    if (inputField) {
+        lv_obj_add_state(inputField, LV_STATE_FOCUSED);
+    }
+}
+
 // Static buffer for text accumulation (avoid malloc)
 static char s_textBuf[MAX_OUTPUT_TEXT_LEN + 128];
 
@@ -316,8 +350,13 @@ void GameUI::print(const char* text)
     // Set full text at once (safer than incremental add)
     lv_textarea_set_text(outputArea, s_textBuf);
 
-    // Move cursor to end
-    lv_textarea_set_cursor_pos(outputArea, LV_TEXTAREA_CURSOR_LAST);
+    // Scroll to bottom to show latest text
+    lv_obj_scroll_to_y(outputArea, LV_COORD_MAX, LV_ANIM_OFF);
+
+    // Keep focus on input field (not the output area)
+    if (inputField) {
+        lv_obj_add_state(inputField, LV_STATE_FOCUSED);
+    }
 }
 
 void GameUI::println(const char* text)
@@ -391,10 +430,7 @@ void GameUI::onKeyPress(uint8_t key)
     // If splash screen is visible, any key dismisses it
     if (splashVisible) {
         hideSplashScreen();
-        // Focus on input field after splash
-        if (inputField) {
-            lv_obj_add_state(inputField, LV_STATE_FOCUSED);
-        }
+        // hideSplashScreen already handles focus activation
         return;
     }
 
@@ -410,6 +446,7 @@ void GameUI::onKeyPress(uint8_t key)
             break;
         case 0x08: // Backspace
             lv_textarea_delete_char(inputField);
+            lv_obj_invalidate(inputField);  // Force redraw
             break;
         case 0x00: // Up arrow (custom code from ZorkMeshModule)
             historyUp();
@@ -417,15 +454,37 @@ void GameUI::onKeyPress(uint8_t key)
         case 0x01: // Down arrow (custom code from ZorkMeshModule)
             historyDown();
             break;
-        case 0x02: // Page Up - disabled for stability
-        case 0x03: // Page Down - disabled for stability
-            // Scrolling disabled - causes crashes on some LVGL versions
+        case 0x02: // Page Up
+            if (outputArea) {
+                lv_obj_scroll_by(outputArea, 0, 80, LV_ANIM_OFF);
+                // Keep focus on input field
+                lv_obj_add_state(inputField, LV_STATE_FOCUSED);
+            }
+            break;
+        case 0x03: // Page Down
+            if (outputArea) {
+                lv_obj_scroll_by(outputArea, 0, -80, LV_ANIM_OFF);
+                // Keep focus on input field
+                lv_obj_add_state(inputField, LV_STATE_FOCUSED);
+            }
             break;
         default:
             // Regular character
             if (key >= 0x20 && key < 0x7F) {
-                char str[2] = {(char)key, '\0'};
-                lv_textarea_add_text(inputField, str);
+                // Get current text and append the new character
+                const char* current = lv_textarea_get_text(inputField);
+                size_t len = current ? strlen(current) : 0;
+                if (len < 78) {  // Leave room for char + null
+                    static char inputBuf[80];
+                    if (current && len > 0) {
+                        memcpy(inputBuf, current, len);
+                    }
+                    inputBuf[len] = (char)key;
+                    inputBuf[len + 1] = '\0';
+                    lv_textarea_set_text(inputField, inputBuf);
+                    lv_textarea_set_cursor_pos(inputField, LV_TEXTAREA_CURSOR_LAST);
+                    lv_obj_invalidate(inputField);  // Force redraw
+                }
             }
             break;
     }
@@ -461,6 +520,7 @@ void GameUI::historyUp()
     if (history[historyIndex]) {
         lv_textarea_set_text(inputField, history[historyIndex]);
         lv_textarea_set_cursor_pos(inputField, LV_TEXTAREA_CURSOR_LAST);
+        lv_obj_invalidate(inputField);  // Force redraw
     }
 }
 
@@ -471,9 +531,11 @@ void GameUI::historyDown()
     historyIndex++;
     if (historyIndex >= historyCount) {
         lv_textarea_set_text(inputField, "");
+        lv_obj_invalidate(inputField);  // Force redraw
     } else if (history[historyIndex]) {
         lv_textarea_set_text(inputField, history[historyIndex]);
         lv_textarea_set_cursor_pos(inputField, LV_TEXTAREA_CURSOR_LAST);
+        lv_obj_invalidate(inputField);  // Force redraw
     }
 }
 
@@ -844,8 +906,12 @@ void GameUI::hideSplashScreen()
         lv_screen_load(screen);
     }
 
-    // Focus on input field
+    // Simulate a touch on the input field to activate it for keyboard input
     if (inputField) {
+        // Send press and release events to simulate a tap
+        lv_obj_send_event(inputField, LV_EVENT_PRESSED, NULL);
+        lv_obj_send_event(inputField, LV_EVENT_RELEASED, NULL);
+        lv_obj_send_event(inputField, LV_EVENT_CLICKED, NULL);
         lv_obj_add_state(inputField, LV_STATE_FOCUSED);
     }
 

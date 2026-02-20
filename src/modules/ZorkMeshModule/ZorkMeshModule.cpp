@@ -727,6 +727,13 @@ int32_t ZorkMeshModule::runOnce()
         return 10000; // Check every 10 seconds when inactive
     }
 
+#if defined(HAS_TFT)
+    // Keep screen awake while ZorkMesh UI is visible
+    if (uiVisible) {
+        powerFSM.trigger(EVENT_INPUT);
+    }
+#endif
+
     // Process raw incoming JSON messages (safe to do JSON parsing here in main loop)
     {
         static char rawJson[MAX_RAW_LEN];
@@ -744,6 +751,9 @@ int32_t ZorkMeshModule::runOnce()
             LOG_INFO("ZorkMesh: queueing deferred print: %s", msg);
             gameUI->printDeferred(msg);  // Uses LVGL timer - safe from any context
         }
+
+        // Ensure input field has focus (in case touch scroll stole it)
+        gameUI->ensureInputFocus();
     }
 #endif
 

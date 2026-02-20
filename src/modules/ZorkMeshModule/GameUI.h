@@ -91,6 +91,9 @@ public:
     // Process keyboard input (called from input handler)
     void onKeyPress(uint8_t key);
 
+    // Ensure input field has focus (call periodically)
+    void ensureInputFocus();
+
     // Get the LVGL screen object
     lv_obj_t* getScreen() const { return screen; }
 
@@ -143,6 +146,9 @@ private:
     lv_timer_t* splashTimer;        // Timer to auto-dismiss splash
     bool splashVisible;
 
+    // Input focus group
+    lv_group_t* inputGroup;         // LVGL group for keyboard focus
+
     // State
     bool visible;
     bool initialized;
@@ -177,6 +183,7 @@ private:
 
     // Static callbacks for LVGL
     static void inputEventCallback(lv_event_t* e);
+    static void outputScrollCallback(lv_event_t* e);
     static void usernameOkCallback(lv_event_t* e);
     static void settingsButtonCallback(lv_event_t* e);
     static void settingsMenuCallback(lv_event_t* e);
