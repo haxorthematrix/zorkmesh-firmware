@@ -4,6 +4,7 @@
 
 #include "GameUI.h"
 #include "GameEngine.h"
+#include "input/InputDriver.h"  // For device-ui input group
 #include <Arduino.h>
 
 // Global instance
@@ -317,6 +318,10 @@ void GameUI::ensureInputFocus()
     }
 
     if (inputField) {
+        lv_group_t* group = InputDriver::getInputGroup();
+        if (group) {
+            lv_group_focus_obj(inputField);
+        }
         lv_obj_add_state(inputField, LV_STATE_FOCUSED);
     }
 }
@@ -906,12 +911,16 @@ void GameUI::hideSplashScreen()
         lv_screen_load(screen);
     }
 
-    // Simulate a touch on the input field to activate it for keyboard input
+    // Add input field to device-ui's input group and focus it
     if (inputField) {
-        // Send press and release events to simulate a tap
-        lv_obj_send_event(inputField, LV_EVENT_PRESSED, NULL);
-        lv_obj_send_event(inputField, LV_EVENT_RELEASED, NULL);
-        lv_obj_send_event(inputField, LV_EVENT_CLICKED, NULL);
+        lv_group_t* group = InputDriver::getInputGroup();
+        if (group) {
+            // Add to group if not already added
+            lv_group_add_obj(group, inputField);
+            // Focus this object in the group (makes keyboard input work)
+            lv_group_focus_obj(inputField);
+            LOG_INFO("GameUI: Input field added to device-ui input group");
+        }
         lv_obj_add_state(inputField, LV_STATE_FOCUSED);
     }
 
